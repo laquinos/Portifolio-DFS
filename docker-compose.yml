@@ -1,0 +1,37 @@
+version: '3.8'
+
+services:
+  nginx_proxy_manager:
+    image: jc21/nginx-proxy-manager:latest
+    container_name: nginx_proxy_manager_portifolio
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+      - "81:81"
+    environment:
+      DB_SQLITE_FILE: "/data/database.sqlite"
+    volumes:
+      - ../data:/data
+      - ./staticfiles:/app/staticfiles
+      - ./media:/app/media
+      - ../letsencrypt:/etc/letsencrypt
+    networks:
+      - nid_network
+
+  portifolio:
+    build: ./portifolio
+    container_name: portifolio
+    volumes:
+      - ./portifolio:/app
+    ports:
+      - "8282:8282"
+    expose:
+      - "8282"
+    command: python manage.py tailwind dev
+    networks:
+      - nid_network
+
+networks:
+  nid_network:
+    driver: bridge

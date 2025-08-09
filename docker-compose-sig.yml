@@ -1,0 +1,195 @@
+services:
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    image: siep_web  # Nomeia a imagem para ser usada pelos serviços do Celery
+    restart: always
+    ports:
+      - "8000:8000"  # Porta usada pelo serviço web
+    env_file:
+      - .env
+    volumes:
+      - .:/app
+      - ../conexoes:/etc/rabbitmq/ssl
+    depends_on:
+      - rabbitmq
+    command: ["uvicorn", "SIEP.asgi:application", 
+              "--host", "0.0.0.0", 
+              "--port", "8000", 
+              "--loop", "uvloop", 
+              "--http", "h11", 
+              "--interface", "asgi3", 
+              "--no-access-log", 
+              "--backlog", "4096", 
+              "--timeout-keep-alive", "1500", 
+              "--timeout-graceful-shutdown", "1500"]
+    networks:
+      - producao_network
+
+
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: n8n
+    restart: always
+    ports:
+      - "5678:5678"
+    environment:
+      - GENERIC_TIMEZONE=America/Sao_Paulo
+      - N8N_BASIC_AUTH_ACTIVE=true
+      - N8N_BASIC_AUTH_USER=laquinos
+      - N8N_BASIC_AUTH_PASSWORD=need8217
+      - N8N_HOST=n8n.stagegetin.site
+      - N8N_PORT=5678
+      - WEBHOOK_URL=https://n8n.stagegetin.site/
+    volumes:
+      - ../n8n/n8n_data:/home/node/.n8n
+    networks:
+      - producao_network
+
+  netdata:
+    image: netdata/netdata:latest
+    container_name: netdata
+    restart: unless-stopped
+    cap_add:
+      - SYS_PTRACE
+      - NET_ADMIN
+    ports:
+      - "19999:19999"  # Porta padrão do Netdata
+    volumes:
+      - /etc/passwd:/host/etc/passwd:ro
+      - /etc/group:/host/etc/group:ro
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - netdata_lib:/var/lib/netdata
+      - netdata_cache:/var/cache/netdata
+      - netdata_config:/etc/netdata
+    env_file:
+      - .env
+    networks:
+      - producao_network
+
+  metabase:
+    image: metabase/metabase:latest
+    container_name: metabase_container
+    ports:
+      - "3000:3000"  # Porta padrão do Metabase
+    environment:
+      MB_DB_TYPE: mysql
+      MB_DB_HOST: 172.30.0.9
+      MB_DB_PORT: 
+      MB_DB_USER: developer
+      MB_DB_PASS: DevC3tm2023!
+      MB_DB_DBNAME: metabase
+    depends_on:
+      - web
+    networks:
+      - producao_network
+
+
+
+  nginx_proxy_manager:
+    image: jc21/nginx-proxy-manager:latest
+    container_name: nginx_proxy_manager_siep
+    restart: always
+    ports:
+      - "80:80"    # Porta HTTP
+      - "443:443"  # Porta HTTPS
+      - "81:81"    # UI do Proxy Manager
+    environment:
+      DB_SQLITE_FILE: "/data/database.sqlite"
+    volumes:
+      - ../data:/data
+      - ./staticfiles:/app/staticfiles  # Mapeie os arquivos estáticos corretamente
+      - ./media:/app/media  # Mapeie os arquivos de mídia corretamente
+      - ../letsencrypt:/etc/letsencrypt
+    networks:
+      - producao_network
+
+  redis:
+    image: redis:6.2
+    container_name: redis_container
+    restart: always
+    ports:
+      - "6379:6379"
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
+    volumes:
+      - ./redis/redis.conf:/usr/local/etc/redis/redis.conf:ro
+      - ./redis/logs:/usr/local/etc/redis/logs
+    networks:
+      - producao_network
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    restart: always
+    ports:
+      - "5671:5671"
+      - "15672:15672"
+    environment:
+      - RABBITMQ_DEFAULT_USER=guest
+      - RABBITMQ_DEFAULT_PASS=guest
+    volumes:
+      - ../conexoes:/etc/rabbitmq/ssl
+      - ../conexoes/rabbitmq.config:/etc/rabbitmq/rabbitmq.config
+    networks:
+      - producao_network
+
+  celery_worker:
+    image: siep_web  # Usa a mesma imagem já construída
+    restart: always
+    env_file:
+      - .env
+    volumes:
+      - .:/app
+      - ../conexoes:/etc/rabbitmq/ssl
+    networks:
+      - producao_network
+    depends_on:
+      - web
+      - rabbitmq
+    command: sh -c "sleep 10 && celery -A SIEP worker --autoscale=10,1 --loglevel=INFO"
+
+  celery_single_instance_worker:
+    image: siep_web  # Usa a mesma imagem já construída
+    restart: always
+    env_file:
+      - .env
+    volumes:
+      - .:/app
+      - ../conexoes:/etc/rabbitmq/ssl
+    networks:
+      - producao_network
+    depends_on:
+      - web
+      - rabbitmq
+    command: sh -c "sleep 10 && celery -A SIEP worker -l info -n trabalhador -Q single_instance_queue -c 1"
+
+  celery_beat:
+    image: siep_web  # Usa a mesma imagem já construída
+    restart: always
+    env_file:
+      - .env
+    volumes:
+      - .:/app
+      - ../conexoes:/etc/rabbitmq/ssl
+    networks:
+      - producao_network
+    depends_on:
+      - web
+      - rabbitmq
+    command: sh -c "sleep 10 && celery -A SIEP beat -l info --scheduler django_celery_beat.schedulers:DatabaseScheduler"
+
+networks:
+  producao_network:
+    driver: bridge
+
+
+volumes:
+  mysql_data:
+  static_volume:
+  media_volume:
+  netdata_lib:
+  netdata_cache:
+  netdata_config:
